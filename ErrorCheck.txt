@@ -1,0 +1,10 @@
+ DCBSP v.4.9
+ 
+ This program requires the following files:
+    run.sys
+    sires.sys
+    AIsires_phantom.csv
+    nominations.txt
+ 
+ File run.sys
+ If the program STOPS here, please contact the server administrator

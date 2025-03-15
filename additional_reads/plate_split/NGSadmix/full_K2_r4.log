@@ -1,0 +1,9 @@
+Input: lname=/home/hemstrow/cody/additional_reads/plate_split/codyGLF.beagle.gz nPop=2, fname=(null) qname=(null) outfiles=/home/hemstrow/cody/additional_reads/plate_split/NGSadmix/full_K2_r4
+Setup: seed=1621027069 nThreads=1 method=1
+Convergence: maxIter=2000 tol=0.000010 tolLike50=0.100000 dymBound=0
+Filters: misTol=0.050000 minMaf=0.050000 minLrt=0.000000 minInd=0
+Input file has dim: nsites=1839 nind=230
+Input file has dim (AFTER filtering): nsites=770 nind=230
+	[ALL done] cpu-time used =  2.66 sec
+	[ALL done] walltime used =  3.00 sec
+best like=-170151.278073 after 224 iterations

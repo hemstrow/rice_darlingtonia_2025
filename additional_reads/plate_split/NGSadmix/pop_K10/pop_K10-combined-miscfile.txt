@@ -1,0 +1,66 @@
+
+Using the parameter settings in the file: 
+''paramfile''
+
+Parameter settings
+----------------------- Main parameters -------------------------
+DATATYPE = 1
+INDFILE = 
+POPFILE = pop_K10-combined.txt
+OUTFILE = pop_K10-combined-merged.txt
+MISCFILE = pop_K10-combined-miscfile.txt
+K = 10
+C = 230
+R = 10
+M = 3
+W = 0
+S = 2
+- Additional options for the Greedy and LargeKGreedy algorithms -
+GREEDY_OPTION = 2
+REPEATS = 20
+PERMUTATIONFILE = 
+----------------------- Optional outputs ------------------------
+PRINT_PERMUTED_DATA = 1
+PERMUTED_DATAFILE = pop_K10-combined-aligned.txt
+PRINT_EVERY_PERM = 0
+EVERY_PERMFILE = 
+PRINT_RANDOM_INPUTORDER = 0
+RANDOM_INPUTORDERFILE = 
+----------------------- Advanced options ------------------------
+OVERRIDE_WARNINGS = 0
+ORDER_BY_RUN = 0
+
+
+In total, 20 configurations of runs and clusters will be tested.
+
+Results
+------------------------------
+The highest value of H' is: 0.68261358758933
+
+The list of permutations of the clusters that produces that
+H' value is (runs are listed sequentially on separate rows)
+
+10 7 9 8 5 6 1 3 4 2 
+2 4 1 7 6 9 3 5 10 8 
+10 7 9 8 5 6 1 3 4 2 
+10 7 9 8 5 6 1 3 4 2 
+1 2 3 4 5 6 7 8 9 10 
+1 2 3 4 5 6 7 8 9 10 
+1 2 3 4 5 6 7 8 9 10 
+6 9 4 5 1 10 8 2 7 3 
+6 9 4 5 1 10 8 2 7 3 
+2 4 1 7 6 9 3 5 10 8 
+
+The pairwise G' values for each pair of runs where the clusters
+of each run are permuted according to the list of permutations above
+
+1.0000 0.5950 1.0000 1.0000 0.6290 0.6290 0.6290 0.6908 0.6908 0.5950 
+0.5950 1.0000 0.5950 0.5950 0.5442 0.5442 0.5442 0.6283 0.6283 1.0000 
+1.0000 0.5950 1.0000 1.0000 0.6290 0.6290 0.6290 0.6908 0.6908 0.5950 
+1.0000 0.5950 1.0000 1.0000 0.6290 0.6290 0.6290 0.6908 0.6908 0.5950 
+0.6290 0.5442 0.6290 0.6290 1.0000 1.0000 1.0000 0.5938 0.5938 0.5442 
+0.6290 0.5442 0.6290 0.6290 1.0000 1.0000 1.0000 0.5938 0.5938 0.5442 
+0.6290 0.5442 0.6290 0.6290 1.0000 1.0000 1.0000 0.5938 0.5938 0.5442 
+0.6908 0.6283 0.6908 0.6908 0.5938 0.5938 0.5938 1.0000 1.0000 0.6283 
+0.6908 0.6283 0.6908 0.6908 0.5938 0.5938 0.5938 1.0000 1.0000 0.6283 
+0.5950 1.0000 0.5950 0.5950 0.5442 0.5442 0.5442 0.6283 0.6283 1.0000 

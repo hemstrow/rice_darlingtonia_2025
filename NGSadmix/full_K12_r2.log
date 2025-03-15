@@ -1,0 +1,9 @@
+Input: lname=/home/hemstrow/cody/re_alignment/codyGLF.beagle.gz nPop=12, fname=(null) qname=(null) outfiles=/home/hemstrow/cody/re_alignment/NGSadmix/full_K12_r2
+Setup: seed=1584143920 nThreads=1 method=1
+Convergence: maxIter=2000 tol=0.000010 tolLike50=0.100000 dymBound=0
+Filters: misTol=0.050000 minMaf=0.050000 minLrt=0.000000 minInd=0
+Input file has dim: nsites=17 nind=262
+Input file has dim (AFTER filtering): nsites=17 nind=262
+	[ALL done] cpu-time used =  0.35 sec
+	[ALL done] walltime used =  0.00 sec
+best like=-3234.772355 after 200 iterations
