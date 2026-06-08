@@ -1,0 +1,9 @@
+Input: lname=angsdput.beagle.gz nPop=2, fname=(null) qname=(null) outfiles=NGSadmix/darlingtonia_K2_r4
+Setup: seed=1780693695 nThreads=1 method=1
+Convergence: maxIter=2000 tol=0.000010 tolLike50=0.100000 dymBound=0
+Filters: misTol=0.050000 minMaf=0.050000 minLrt=0.000000 minInd=0
+Input file has dim: nsites=227 nind=181
+Input file has dim (AFTER filtering): nsites=227 nind=181
+	[ALL done] cpu-time used =  0.08 sec
+	[ALL done] walltime used =  0.00 sec
+best like=-39498.461919 after 121 iterations
