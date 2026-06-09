@@ -1,0 +1,1 @@
+This repository contains the code (and data) for Rice and Hemstrom et al (2026) *darlingtonia* paper. The script at `Analysis/scripts_and_results/genotyping.rmd` contains all of the code needed to run the actual analysis (although it points to several shell scripts, etc to actually conduct the analysis).
