@@ -1,0 +1,17 @@
+PCAngsd v1.36.4
+Time: 12/03/2026 12:50:01
+Directory: /mnt/d/Cluster_storage/cody/darlingtonia/scripts
+Options:
+	--beagle darlingtonia_maf01_combined.beagle.gz
+	--threads 4
+	--out pcangsd/darlingtonia_maf01_pcangsd
+	--inbreed_samples
+
+Loaded 806 sites and 181 samples.
+Number of sites after MAF filtering (0.05): 781
+
+PCAngsd did not converge using 1 eigenvectors!
+Saved covariance matrix as pcangsd/darlingtonia_maf01_pcangsd.cov
+Saved per-sample inbreeding coefficients as pcangsd/darlingtonia_maf01_pcangsd.inbreed.samples
+
+Total elapsed time: 0m0s

@@ -1,0 +1,19 @@
+PCAngsd v1.36.4
+Time: 12/03/2026 12:50:06
+Directory: /mnt/d/Cluster_storage/cody/darlingtonia/scripts
+Options:
+	--beagle darlingtonia_maf05_combined.beagle.gz
+	--eig 3
+	--threads 4
+	--out pcangsd/darlingtonia_maf05_pcangsdK_4
+	--admix
+
+Loaded 781 sites and 181 samples.
+Number of sites after MAF filtering (0.05): 781
+
+PCAngsd did not converge using 3 eigenvectors!
+Saved covariance matrix as pcangsd/darlingtonia_maf05_pcangsdK_4.cov
+Saved admixture proportions as pcangsd/darlingtonia_maf05_pcangsdK_4.admix.4.Q
+Saved ancestral allele frequencies proportions as pcangsd/darlingtonia_maf05_pcangsdK_4.admix.4.P
+
+Total elapsed time: 0m0s
