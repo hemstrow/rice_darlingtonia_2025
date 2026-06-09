@@ -1,0 +1,566 @@
+---
+title: "Calling Genotypes with and without a reference"
+author: "William Hemstrom"
+date: "2025-12-8"
+output:
+  html_document:
+      toc: true
+  pdf_document:
+      toc: true
+---
+
+```{r setup}
+library(data.table); library(foreach); library(ggplot2);library(snpR); library(sf)
+
+add_path <- function(npath = "/home/hemstrow/bin:/home/hemstrow/miniforge3/bin:/usr/bin"){
+  current_path <- Sys.getenv("PATH")
+  Sys.setenv(PATH = paste(current_path, npath, sep = ":"))
+}
+```
+
+# *de novo* genotyping (without a reference)
+
+## Parameter control
+
+The following R chunk controls the filtering parameters this script will use. To run this entire analysis with a different set of filters, they can simply be changed here! Everything that follows can then be re-run as written with no further changes necessary.
+
+```{r set_filters}
+# run parameters
+par <- 4 # for all of these jobs, how many processing threads should we use?
+
+# equalizing parameters
+min_reads <- 2e4
+
+# stacks parameters -- see below
+# * M: number of mismatches allowed between stacks within individuals
+# * m: minimum number of raw reads required to form a stack
+# * n: number of mismatches allowed between stacks between individuals
+m <- 4
+M <- 2
+n <- m
+r <- .5
+
+# ANGSD filters
+minQ <- 20
+mapQ <- 20
+min_ind <- .5
+maf <- 0.05
+
+```
+
+## Pre-processing
+
+The first step is to filter our reads to remove low-quality bases, etc. We can do this for `stacks` specifically with `process_radtags`.
+
+We're also going to run things in parallel using the `foreach` R package to run our processes on each sample at once.
+
+```{r}
+# make a list of our input files
+SRA_info <- data.frame(
+  raw = list.files("../fastqs/", ".+RA.+fastq$"))
+SRA_info$R1 <- paste0("../fastqs/", SRA_info$raw)
+SRA_info$R2 <- gsub("_RA_", "_RB_", SRA_info$R1)
+SRA_info$sample <- gsub("_RA_", "_", SRA_info$raw)
+SRA_info$sample <- gsub("SOMM371_", "", SRA_info$sample)
+SRA_info$sample <- gsub("\\.fastq", "", SRA_info$sample)
+
+
+trimmed_dir <- "./trimmed"
+dir.create(trimmed_dir)
+
+# set-up parallel computing
+cl <- parallel::makePSOCKcluster(par)
+doParallel::registerDoParallel(cl)
+
+# run process_radtags for each sample!
+foreach(q = 1:nrow(SRA_info)) %dopar% {
+  add_path()
+  
+  # put together call
+  cmd <- paste0("process_radtags ", 
+                " -1 ", SRA_info[q, 2], # define read 1
+                " -2 ", SRA_info[q, 3], # define read 2
+                " -i fastq",
+                " -y fastq",
+                " -e SbfI",  # restriction enzyme
+                " -o ", trimmed_dir, # output dest
+                " --bestrad", # most of the time this isn't needed, quirk of this data
+                " --disable-rad-check", # most of the time this isn't needed, quirk of this data
+                " --truncate 110" # all reads need to be the same length for STACKS specifically
+                )
+  
+  # run the call
+  system(cmd)
+}
+
+
+parallel::stopCluster(cl)
+
+SRA_info$R1_trimmed <- paste0("./trimmed/", SRA_info$sample, "_1.1.fq")
+SRA_info$R2_trimmed <- paste0("./trimmed/", SRA_info$sample, "_2.2.fq")
+
+# move files so the names are as expected
+on <- gsub("\\.\\./fastqs/", "./trimmed/", SRA_info$R1)
+on <- gsub("\\.fastq", "", on)
+file.rename(paste0(on, ".1.fq"), SRA_info$R1_trimmed)
+on <- gsub("_RA", "_RB", on)
+file.rename(paste0(on, ".2.fq"), SRA_info$R2_trimmed)
+```
+
+## Equalizing read counts
+Many analyses can be biased if downstream sequening depths are different. For reference guided assembly, we'd align to the reference at this point and equalize depths, but for *de novo* genotyping we'll instead equalize read counts here.
+
+```{r}
+# figure out read counts
+system("pwd")
+cmd <- paste0("wc -l ", SRA_info$R1_trimmed)
+lens <- unlist(lapply(cmd, system, intern = TRUE)) # figure out the number of lines for each file
+SRA_info$nreads <- as.numeric(gsub(" .+", "", lens))/4 # number of reads in each sample
+
+ggplot(SRA_info, aes(x = log10(nreads))) +
+  geom_histogram() +
+  theme_bw() +
+  geom_vline(xintercept = log10(min_reads), color = "red")
+
+```
+
+Pick `min_reads` and set above from this histogram.
+
+
+```{r}
+SRA_info$R1_sub <- paste0(SRA_info$sample, "_1_sub.fastq")
+SRA_info$R2_sub <- paste0(SRA_info$sample, "_2_sub.fastq")
+
+# subset
+cl <- parallel::makePSOCKcluster(par)
+doParallel::registerDoParallel(cl)
+foreach(q = 1:nrow(SRA_info)) %dopar% {
+  add_path()
+  
+  if(SRA_info$nreads[q] >= min_reads){
+    # put together call -- R1
+    cmd <- paste0("head -n ", min_reads*4, 
+                  " ", SRA_info$R1_trimmed[q], # define read 1
+                  " > ", SRA_info$R1_sub[q])
+    
+    # run the call
+    system(cmd)
+    
+    
+    # put together call -- R2
+    cmd <- paste0("head -n ", min_reads*4, 
+                  " ", SRA_info$R2_trimmed[q], # define read 1
+                  " > ", SRA_info$R2_sub[q])
+    
+    # run the call
+    system(cmd)
+  }
+}
+
+parallel::stopCluster(cl)
+
+SRA_info <- SRA_info[-which(SRA_info$nreads < min_reads),]
+```
+
+## Run STACKS
+
+We're now ready to run stacks itself! This is a multiple step process. We'll run these tools in sequence:
+
+1. ustacks: identify loci
+2. cstacks: make a catalog
+3. sstacks: match samples back to catalog
+4. tsv2bam: transpose to bams (our actual per-sample 'alignments')
+5. gstacks: call genotypes
+
+We'll use the helper script 'denovo_map.pl' included with `stacks` to help do this for us. It needs two things:
+
+1. a file noting the samples and their populations of origin (the 'popmap')
+2. all of our samples in one directory, all of which should be zipped, with a specific naming convention.
+
+First, we'll make the popmap file.
+
+```{r}
+meta1 <- fread("../meta/biosample.tsv")
+meta2 <- fread("../meta/SRA_meadata.tsv")
+meta <- merge(meta1, meta2)
+meta <- merge(SRA_info, meta, by.y = "filename", by.x = "raw", all.x = TRUE, sort = FALSE)
+meta$pop <- gsub("_S.+$", "", meta$sample_name)
+meta$pop <- gsub("-", "_", meta$pop)
+popmap <- data.frame(sample = paste0(SRA_info$sample),
+                     pop = meta$pop)
+write.table(popmap, "popmap.txt", col.names = FALSE, row.names = FALSE, quote = FALSE, sep = "\t")
+```
+
+Next, we'll rename and move the files. The files must all be named something like:
+"sample.1.fq.gz" and "sample.2.fq.gz" for the read 1 and read 2 files.
+
+```{r}
+sampdir <- "./samples"
+dir.create(sampdir)
+
+# move files
+SRA_info$R1_stacks <- paste0(sampdir, "/", SRA_info$sample, ".1.fq")
+SRA_info$R2_stacks <- paste0(sampdir, "/", SRA_info$sample, ".2.fq")
+file.rename(SRA_info$R1_sub, SRA_info$R1_stacks)
+file.rename(SRA_info$R2_sub, SRA_info$R2_stacks)
+
+
+# zip files
+cl <- parallel::makePSOCKcluster(par)
+doParallel::registerDoParallel(cl)
+foreach(q = 1:nrow(SRA_info)) %dopar% {
+  add_path()
+  
+  # zip
+  cmd <- paste0("gzip ", SRA_info$R1_stacks[q])
+  system(cmd)
+  cmd <- paste0("gzip ", SRA_info$R2_stacks[q])
+  system(cmd)
+  
+}
+parallel::stopCluster(cl)
+```
+
+We're now ready to actually run stacks! This step uses three key parameters:
+
+* M: number of mismatches allowed between stacks within individuals
+* m: minimum number of raw reads required to form a stack
+* n: number of mismatches allowed between stacks between individuals
+
+```{r}
+# create output dir
+stdir <- "./stacks"
+dir.create(stdir)
+
+add_path()
+
+cmd <- paste0("denovo_map.pl",
+              " --samples ", sampdir,
+              " --popmap ", "popmap.txt",
+              " -o ", stdir,
+              " -n ", n,
+              " -M ", M,
+              " -r ", r,
+              " -T ", par,
+              ' -X "ustacks: -m ', m, '"',
+              ' -X "populations: --vcf"',
+              ' -X "gstacks: --write-alignments"') # tells stacks to output a vcf file for further analysis
+
+system(cmd)
+
+
+on <- paste0("./stacks/", SRA_info$sample, ".alns.bam")
+SRA_info$aln <- paste0("./alns/", SRA_info$sample, "alns.bam")
+file.rename(on, aln)
+```
+
+# Do the low-coverage work including PCAngsd, etc.
+Since this is *very* low coverage data, what we will actually do next is use the `catalog.fa.gz` reference and the `.aln.bam` alignments with ANGSD to get likelihoods from this. We don't expect many loci to be actually genotypable.
+
+## parameters
+```{r}
+# filtering parameters handled above.
+maxk <- 8
+mapQ <- 20
+minQ <- 20
+snp_pval <- 1e-10
+minInd <- .25
+```
+
+## re-align with bwa and filter via script
+Since the alignments from STACKS don't include critical quality information that'll cause things to error down the line, we'll re-align using bwa.
+
+```{r}
+# index
+system("bwa index stacks/catalog.fa.gz")
+system("samtools faidx stacks/catalog.fa.gz")
+
+cl <- parallel::makePSOCKcluster(par)
+doParallel::registerDoParallel(cl)
+foreach(q = 1:nrow(SRA_info)) %dopar% {
+  add_path()
+  cmd <- paste0("./run_align.sh ",
+                SRA_info$R1_stacks[q], " ",
+                SRA_info$R2_stacks[q], " ", 
+               "stacks/catalog.fa.gz")
+  system(cmd)
+  
+}
+parallel::stopCluster(cl)
+
+dir.create("alns")
+SRA_info$aln <- paste0("alns/", SRA_info$sample, ".bam")
+file.rename(paste0(gsub("\\.fq", ".sort.flt.bam", SRA_info$R1_stacks)),
+            SRA_info$aln)
+file.rename(paste0(gsub("\\.fq", ".sort.flt.bam.bai", SRA_info$R1_stacks)),
+            paste0(SRA_info$aln, ".bai"))
+
+```
+
+
+## Get likelihoods
+We use the "angsd.sh" script for this, which breaks things down into chunks to analyze. We start by defining region files using the index de-novo reference and making a bamlist.
+```{r}
+fai <- fread("stacks/catalog.fa.gz.fai")
+fai[,r := paste0(V1, ":")]
+rf <- split(fai$r, sort(rep(1:20, length.out = nrow(fai))))
+
+dir.create("regionfiles")
+for(i in 1:length(rf)){
+  writeLines(rf[[i]], "rf_", i, ".txt")
+}
+
+bamlist <- writeLines(SRA_info$aln, "bamlist.txt")
+```
+
+We then run the script. This script runs for both maf 0.05 and maf 0.01.
+
+```{r}
+# bamlist
+writeLines(SRA_info$aln, "bamlist.txt", sep = "\n")
+
+cmd <- paste0("./angsd.sh ",
+              mapQ, " ",
+              minQ, " ",
+              snp_pval, " ",
+              floor(nrow(SRA_info)*minInd)
+)
+
+add_path("/home/hemstrow/miniforge3/envs/angsd/bin")
+system(cmd)
+
+like_res <- data.table(maf = c("01", "05"))
+like_res[,beagle := paste0("darlingtonia_maf", maf, "_combined.beagle.gz")]
+```
+
+## run PCAngsd
+Run PCAngsd on the results. Also calculates $F_{IS}$ (equivalent) per individual.
+
+```{r}
+dir.create("pcangsd")
+for(i in 1:nrow(like_res)){
+  cmd <- paste0("Rscript pcangsd_admix.R ",
+                like_res$beagle[i], " ",
+                "pcangsd/darlingtonia_maf", like_res$maf[i], "_pcangsd", " ",
+                maxk, " ",
+                par)
+  
+  add_path("/home/hemstrow/miniforge3/envs/pcangsd/bin")
+  system(cmd)
+}
+```
+
+Plot the results
+```{r}
+# prep
+PCA_plots <- vector("list", nrow(like_res))
+names(PCA_plots) <- like_res$maf
+admix_plots <- PCA_plots
+inbreed_plots <- admix_plots
+
+popmap <- fread("popmap.txt", header = FALSE)
+bamlist <- fread("bamlist.txt", header = FALSE)
+colnames(bamlist) <- "bam"
+colnames(popmap) <- c("sample", "pop")
+bamlist[,sample := stringi::stri_extract(bam, regex = "[A-Z]+_[A-Z]+")]
+bamlist <- merge(bamlist, popmap, by = "sample", sort = FALSE)
+
+# plot
+for(i in 1:nrow(like_res)){
+  C <- as.matrix(read.table(paste0("pcangsd/darlingtonia_maf", like_res$maf[i], "_pcangsd.cov"))) # Reads estimated covariance matrix
+
+
+  # Plot PCA plot
+  e <- eigen(C)
+  pca <- as.data.frame(e$vectors)
+  colnames(pca) <- paste0("PC", 1:ncol(pca))
+  pca$pop <- bamlist$pop
+  pvarexp <- e$values/sum(e$values)
+  
+  PCA_plots[[i]] <- ggplot(pca, aes(x = PC1, y = PC2, color = pop)) +
+    geom_point() +
+    theme_bw() +
+    khroma::scale_color_vibrant() +
+    xlab(paste0("PC1 (", round(pvarexp[1]*100, 2), "%)")) +
+    ylab(paste0("PC2 (", round(pvarexp[2]*100, 2), "%)")) +
+    guides(color = guide_legend(title = "Population"))
+  
+  setwd("pcangsd")
+  admix_plots[[i]] <- plot_structure(paste0("darlingtonia_maf", 
+                                            like_res$maf[i], "_pcangsdK.+Q$"), 
+                                     facet = bamlist$pop, 
+                                     alt.palette = khroma::color("highcontrast")(2), k = 2)
+  setwd("..")
+  
+  inbreed <- fread(paste0("pcangsd/darlingtonia_maf", like_res$maf[i], "_pcangsd.inbreed.samples"))
+  colnames(inbreed) <- "FIS"
+  inbreed$pop <- bamlist$pop
+  inbreed_plots[[i]] <- ggplot(inbreed, aes(x = pop, y = FIS)) + 
+    geom_boxplot() +
+    theme_bw() +
+    theme(panel.grid = element_blank()) +
+    xlab("Population") +
+    ylab(bquote(italic(F[IS])))
+}
+
+```
+
+Nothing really changes across MAFs, so we'll just show MAF = 0.05
+```{r}
+sp <- cowplot::plot_grid(PCA_plots$`05`, admix_plots$`05`$plot + xlab("Population"),
+                   align = "hv", axis = "tlbr", nrow = 2)
+
+cowplot::save_plot("../results/loco_structure.pdf", sp, base_height = 10, base_width = 10)
+```
+
+# IBS approach
+This seems to work better with this very sparse data!
+```{r}
+cmd <- paste0("angsd -bam bamlist.txt -minQ 20 -minMapQ 20 -minMaf 0.05 -SNP_pval 1e-10 -minInd 45 -GL 1 -doMajorMinor 1 -doMaf 1 -doIBS 1 -doCounts 1 -doCov 1 -makeMatrix 1 -doGLF 2")
+
+add_path()
+system(cmd)
+
+cov <- as.matrix(read.table("angsdput.covMat"))
+cov <- na.omit(cov)
+ommitted <- attr(cov, "na.action")
+cov <- cov[,-ommitted]
+e <- eigen(cov)
+pca <- e$vectors
+pca <- as.data.frame(pca)
+colnames(pca) <- paste0("PC", 1:ncol(pca))
+pca$pop <- popmap$pop[-ommitted]
+percents <- e$values/sum(e$values)
+pca <- as.data.table(pca)
+pca[,Location := ifelse(pop == "Mendocino_County", "Mendocino",
+                        ifelse(pop == "Plumas_NF", "Plumas",
+                               ifelse(pop == "Shasta_Trinity_NF", "Shasta-Trinity",
+                                      "Six Rivers")))]
+
+PCA <- ggplot(pca, aes(x = PC1, y = PC2, color = Location)) + geom_point(size = 3) +
+  khroma::scale_color_okabeito() + theme_bw() +
+  xlab(paste0("PC1 (", round(percents[1], 3)*100, "%)")) +
+  ylab(paste0("PC2 (", round(percents[2], 3)*100, "%)"))
+```
+
+# NGSadmix
+Run
+```{r}
+k <- 1:4
+reps <- 10
+
+dir.create("NGSadmix")
+for(i in k){
+  for(j in 1:reps){
+    output <- paste0("NGSadmix/darlingtonia_K", i, "_r", j)
+    cmd <- paste0("~/bin/NGSadmix -likes angsdput.beagle.gz -K ", i, " -minMaf 0.05 -o ", output)
+    system(cmd)
+  }
+}
+```
+
+
+```{r}
+background <- rnaturalearth::ne_states(country = "United States of America", returnclass = "sf")
+background <- background[background$name %in% c("Oregon", "Nevada", "California"),]
+popmap[,Location := ifelse(pop == "Mendocino_County", "Mendocino",
+                        ifelse(pop == "Plumas_NF", "Plumas",
+                               ifelse(pop == "Shasta_Trinity_NF", "Shasta-Trinity",
+                                      "Six Rivers")))]
+meta <- as.data.table(meta)
+popmap <- merge(popmap, meta[,.(sample, lat_lon)], by = "sample", sort = FALSE)
+popmap[,Long := gsub(".+N ", "", lat_lon)]
+popmap[,Long := gsub(" .+", "", Long)]
+popmap[,Long := paste0("-", Long)]
+popmap[,Lat := gsub(" .+", "", lat_lon)]
+source("~/GITHUB/GRSP/scripts/genoscape_func.R")
+
+ucoords <- unique(popmap[,.(Location, Long, Lat)])
+ucoords$SG <- 1:nrow(ucoords)
+ucoords <- ucoords[order(ucoords$Location),]
+ucoords$SGn <- 1:nrow(ucoords)
+
+popmap <- merge(popmap, ucoords[,.(Location, Long, Lat, SGn)], by = c("Location", "Long", "Lat"), sort = FALSE)
+popmap[,n := .N, by = SGn]
+
+# neword <- c(1,2,4,7, # six rivers
+#             6, 8 , 9, 11, 12,# shasta
+#             3, 5, # plumas,
+#             10 # mendo
+# )
+# SG_key <- data.table(SG = 1:12)
+# SG_key <- SG_key[neword,]
+# SG_key[,newSG := 1:nrow(SG_key)]
+# popmap[,SG := SG_key$newSG[match(popmap$group, SG_key$SG)]]
+
+
+                     
+Location <- popmap$Location
+SG <- as.character(popmap$SGn)
+setwd("NGSadmix/")
+add_path()
+admix_plots_full <- plot_structure("\\.qopt", Location, reps = 10, k = 2:4, clumpp_path = "~/bin/CLUMPP", 
+                              alt.palette = khroma::color("okabeito")(4)[c(4,3,2,1)], qsort = FALSE, 
+                              facet.order = c("Mendocino", "Plumas", "Shasta-Trinity", "Six Rivers"))
+admix_plots_fine <- plot_structure("\\.qopt", SG, reps = 10, k = 2:4, clumpp_path = "~/bin/CLUMPP", 
+                              alt.palette = khroma::color("okabeito")(4)[c(4,3,2,1)], qsort = FALSE, 
+                              facet.order = as.character(c(1:14)))
+setwd("..")
+```
+
+Map
+```{r}
+extent <- sf::st_bbox(background)
+extent["ymin"] <- 38
+extent["ymax"] <- 42.5
+extent["xmax"] <- -119
+background <- sf::st_crop(background, extent)
+
+# veg data, from (Ecological Subsections: Landcover)[https://data.fs.usda.gov/geodata/edw/datasets.php?dsetCategory=biota]
+veg <- st_read("~/GITHUB/rice_darlingtonia_2025/shpfiles/S_USA.NationalLandcoverSubsections/")
+veg <- st_transform(veg, st_crs(background))
+sf::sf_use_s2(FALSE)
+veg <- st_crop(veg, extent)
+veg$`% Forest Cover` <- veg$EVERGREEN1 + veg$DECID_FO_1 + veg$MIXED_FO_1
+
+groups_large <- group_points(popmap, dist = .5, crs = st_crs(background), coords = c("Long", "Lat"), dist_is_degrees = TRUE)
+
+psf <- st_as_sf(groups_large$simplified[,.(Location, Long, Lat)], coords = c("Long", "Lat"), crs = st_crs(background))
+
+map <- ggplot()
+
+
+map <- plot_structure_map(admix_plots_full, k = 3, facet = "Location", pop_coordinates = psf,
+                                    layers = list(geom_sf(data = veg, aes(fill = `% Forest Cover`), color = NA, lwd = 0, alpha = .5),
+                                                  khroma::scale_fill_batlow(reverse = TRUE),
+                                                  # guides(fill = guide_legend(title = "% Forest Cover")),
+                                                  geom_sf(data = background, fill = NA, lwd = 1, color = "black"),
+                                                  ggnewscale::new_scale_fill()),
+                                    radius_scale = .1, label_args = list(nudge_x = .5, nudge_y = .5),
+                                    alt.palette = khroma::color("okabeito")(4)[c(4,3,2)], crop = FALSE,
+                                    scale_bar = list(text_cex = 1, height = unit(.03, "native")),
+                                    compass = list(style = ggspatial::north_arrow_orienteering, location = "br"), 
+                                    pop_names = TRUE, ask = FALSE) +
+  scale_x_continuous(expand = c(0.05, 0.05)) +
+  scale_y_continuous(expand = c(0.05, 0.05))
+map <- map + theme(legend.text = element_text(size = 14),
+            axis.text = element_text(size = 12),
+            axis.title = element_text(size = 16),
+            legend.title = element_text(size = 16))
+```
+
+Final plot
+```{r}
+Figure_1 <- gridExtra::grid.arrange(PCA  + ggtitle("A") + theme(plot.title = element_text(size = 20)), 
+                                    map + ggtitle("B")+ theme(plot.title = element_text(size = 20)), 
+                                    admix_plots_full$plot + ylab("Ancestry Proportion") +
+                                      ggtitle("C") + theme(plot.title = element_text(size = 20)),
+                                    layout_matrix = matrix(c(1, 3, 2, 3), ncol = 2))
+ggsave("Figure1.pdf", Figure_1, "pdf", height = 11, width = 15)
+
+
+ggsave("FigureS1.pdf", admix_plots_fine$plot + ylab("Ancestry Proportion"), "pdf", height = 11, width = 15)
+```
+
+
+
